@@ -167,14 +167,12 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("⚠️ An internal error occurred. Please try again later.")
 
 def main():
-    # Get bot token from environment variable (recommended) or hardcode for testing
+    # Read token from environment variable (set in Render)
     TOKEN = os.environ.get("8714176831:AAEDT727dFmSyK4Mm49zp6-230FKs1Lxio8")
     if not TOKEN:
-        # If not set, you can input it manually (for testing)
-        TOKEN = input("Enter your bot token: ").strip()
-        if not TOKEN:
-            print("No token provided. Exiting.")
-            return
+        # Log error and exit – no interactive prompt!
+        print("Error: TELEGRAM_BOT_TOKEN environment variable not set.")
+        return
 
     # Create the Application
     application = Application.builder().token(TOKEN).build()
