@@ -272,7 +272,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("⚠️ An internal error occurred. Please try again later.")
 
 def main():
-    TOKEN = os.environ.get("8714176831:AAEDT727dFmSyK4Mm49zp6-230FKs1Lxio8")
+    TOKEN = "8714176831:AAEDT727dFmSyK4Mm49zp6-230FKs1Lxio8"
 
     if not TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN environment variable is not set!")
