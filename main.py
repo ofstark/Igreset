@@ -260,7 +260,7 @@ def main():
     application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_reset_link))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reset_link))
     application.add_error_handler(error_handler)
 
     logger.info("Bot is running...")
