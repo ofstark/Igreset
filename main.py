@@ -7,17 +7,25 @@ import re
 import json
 from datetime import datetime
 import logging
-from urllib.parse import urlparse, parse_qs, unquote
-
+from urllib.parse import urlparse, parse_qs
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Enable logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# ========== Helper Functions ==========
+
+def escape_markdown_v2(text: str) -> str:
+    """Escape special characters for Telegram MarkdownV2."""
+    special_chars = r'_*[]()~`>#+-=|{}.!'
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
 
 # ========== Instagram Reset Logic ==========
 
@@ -30,7 +38,6 @@ def generate_device_info():
     models = ['SM-G975F', 'Mi-9T', 'Pixel-6', 'ONEPLUS-A6003', 'Pixel-7', 'motorola razr 40']
 
     ANDROID_ID = f"android-{''.join(random.choices(string.hexdigits.lower(), k=16))}"
-    
     USER_AGENT = (
         f"Instagram {random.choice(['394.0.0.46.81', '419.0.0.49.71', '422.0.0.XX.XX'])} "
         f"Android ({random.choice(android_versions)}; "
@@ -40,14 +47,11 @@ def generate_device_info():
         f"{random.choice(models)}; "
         f"en_US; {random.randint(100000000, 999999999)})"
     )
-    
     WATERFALL_ID = str(uuid.uuid4())
     timestamp = int(datetime.now().timestamp())
     nums = ''.join([str(random.randint(1, 99)) for _ in range(4)])
     PASSWORD = f'#PWD_INSTAGRAM:0:{timestamp}:starc@{nums}'
-    
     return ANDROID_ID, USER_AGENT, WATERFALL_ID, PASSWORD
-
 
 def make_headers(mid="", user_agent=""):
     """Return headers for Instagram API requests."""
@@ -57,17 +61,15 @@ def make_headers(mid="", user_agent=""):
         "X-Mid": mid,
         "User-Agent": user_agent,
         "Accept": "*/*",
-        "X-IG-App-ID": "936619743392459",  # Common Instagram app ID
+        "X-IG-App-ID": "936619743392459",
     }
 
-
-def get_username(user_id):
-    """Retrieve Instagram username by user ID."""
+def get_username(user_id: str, user_agent: str) -> str:
+    """Retrieve Instagram username by user ID using a provided user agent."""
     try:
         url = f"https://i.instagram.com/api/v1/users/{user_id}/info/"
-        headers = {"User-Agent": "Instagram 419.0.0.49.71 Android"}
+        headers = {"User-Agent": user_agent}
         r = requests.get(url, headers=headers, timeout=15)
-        
         if r.status_code == 200:
             return r.json()["user"]["username"]
         else:
@@ -77,18 +79,51 @@ def get_username(user_id):
         logger.error(f"Error getting username: {e}")
         return None
 
+def extract_challenge_context(r2_text: str, cni: str) -> str:
+    """Extract challenge_context from the Bloks response using multiple fallbacks."""
+    # Try to parse as JSON if the response is a JSON string
+    try:
+        data = json.loads(r2_text)
+        # Look for challenge_context in the structure (may be nested)
+        if isinstance(data, dict):
+            if "challenge_context" in data:
+                return data["challenge_context"]
+            # Some responses have it inside a "data" field
+            if "data" in data and isinstance(data["data"], dict) and "challenge_context" in data["data"]:
+                return data["data"]["challenge_context"]
+    except:
+        pass
+
+    # Try regex to find the challenge_context string
+    match = re.search(r'"challenge_context":"(.*?)"', r2_text)
+    if match:
+        return match.group(1)
+
+    # Fallback: try to use the original splitting method (brittle)
+    try:
+        # Remove escape characters
+        clean = r2_text.replace('\\', '')
+        # Extract based on known pattern
+        pattern = f'(bk.action.i64.Const, {cni}), "'
+        if pattern in clean:
+            part = clean.split(pattern)[1]
+            challenge = part.split('", (bk.action.bool.Const, false))')[0]
+            return challenge
+    except:
+        pass
+
+    return None
 
 def reset_instagram_password(reset_link: str):
     """
     Attempt to reset Instagram password using a one-click login email link.
+    Returns dict with success status, username, new password, and user_id.
     """
     try:
-        # Parse link more robustly (handles both ? and # fragments)
+        # Parse link robustly (handles both ? and # fragments)
         parsed = urlparse(reset_link)
         query_params = parse_qs(parsed.query)
         fragment_params = parse_qs(parsed.fragment)
-
-        # Combine query and fragment params
         all_params = {**query_params, **fragment_params}
 
         uidb36_list = all_params.get("uidb36") or all_params.get("uid")
@@ -129,7 +164,6 @@ def reset_instagram_password(reset_link: str):
 
         # Step 2: Get challenge
         url2 = "https://i.instagram.com/api/v1/bloks/apps/com.instagram.challenge.navigation.take_challenge/"
-
         data2 = {
             "user_id": str(user_id),
             "cni": str(cni),
@@ -138,7 +172,7 @@ def reset_instagram_password(reset_link: str):
                 "bloks_version": "e061cacfa956f06869fc2b678270bef1583d2480bf51f508321e64cfb5cc12bd",
                 "styles_id": "instagram"
             }),
-            "challenge_context": str(challenge_context),
+            "challenge_context": str(challenge_context) if challenge_context else "",
             "bloks_versioning_id": "e061cacfa956f06869fc2b678270bef1583d2480bf51f508321e64cfb5cc12bd",
             "get_challenge": "true"
         }
@@ -146,21 +180,7 @@ def reset_instagram_password(reset_link: str):
         r2 = requests.post(url2, headers=make_headers(mid, USER_AGENT), data=data2, timeout=15)
         r2_text = r2.text
 
-        # Robust challenge_context extraction
-        challenge_context_final = None
-
-        # Try regex first (most reliable)
-        match = re.search(r'"challenge_context":"(.*?)"', r2_text)
-        if match:
-            challenge_context_final = match.group(1)
-        else:
-            # Fallback: try to find bk.action.i64.Const pattern
-            try:
-                clean = r2_text.replace('\\', '')
-                challenge_context_final = clean.split(f'(bk.action.i64.Const, {cni}), "')[1].split('", (bk.action.bool.Const, false))')[0]
-            except Exception:
-                pass
-
+        challenge_context_final = extract_challenge_context(r2_text, cni)
         if not challenge_context_final:
             return {"success": False, "error": "Failed to extract final challenge context from Bloks response."}
 
@@ -190,7 +210,7 @@ def reset_instagram_password(reset_link: str):
             logger.warning(f"Password submit returned: {r3.status_code} - {r3.text[:200]}")
 
         new_password = PASSWORD.split(":")[-1]
-        username = get_username(user_id) or "Unknown"
+        username = get_username(user_id, USER_AGENT) or "Unknown"
 
         return {
             "success": True,
@@ -203,7 +223,6 @@ def reset_instagram_password(reset_link: str):
         logger.exception("Critical error in reset_instagram_password")
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
-
 # ========== Telegram Bot Handlers ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -214,7 +233,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`https://www.instagram.com/accounts/password/reset/?uidb36=...&token=...`\n\n"
         "⚠️ This is for educational/testing purposes. Use at your own risk."
     )
-
 
 async def handle_reset_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = update.message.text.strip()
@@ -228,44 +246,48 @@ async def handle_reset_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = reset_instagram_password(link)
 
     if result.get("success"):
+        # Escape special characters for MarkdownV2
+        username_esc = escape_markdown_v2(result['username'])
+        password_esc = escape_markdown_v2(result['password'])
+        user_id_esc = escape_markdown_v2(str(result['user_id']))
+
         msg = (
             f"✅ **Password Reset Successful!**\n\n"
-            f"👤 **Username:** `{result['username']}`\n"
-            f"🔑 **New Password:** `{result['password']}`\n"
-            f"🆔 **User ID:** `{result['user_id']}`\n\n"
+            f"👤 **Username:** `{username_esc}`\n"
+            f"🔑 **New Password:** `{password_esc}`\n"
+            f"🆔 **User ID:** `{user_id_esc}`\n\n"
             f"⚠️ Change this password immediately after logging in."
         )
         await processing_msg.edit_text(msg, parse_mode="MarkdownV2")
     else:
-        error = result.get("error", "Unknown error")
+        error_esc = escape_markdown_v2(result.get("error", "Unknown error"))
         await processing_msg.edit_text(
-            f"❌ **Reset Failed**\n\nError: `{error}`", 
+            f"❌ **Reset Failed**\n\nError: `{error_esc}`",
             parse_mode="MarkdownV2"
         )
-
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception while handling update:", exc_info=context.error)
     if update and update.effective_message:
-        await update.effective_message.reply_text("⚠️ An internal error occurred. Please try again.")
-
+        await update.effective_message.reply_text("⚠️ An internal error occurred. Please try again later.")
 
 def main():
-    TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")   # ← Corrected
+    TOKEN = os.environ.get("8714176831:AAEDT727dFmSyK4Mm49zp6-230FKs1Lxio8")
 
     if not TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN environment variable is not set!")
         return
 
+    # Build the application with the token
     application = Application.builder().token(TOKEN).build()
 
+    # Register handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reset_link))
     application.add_error_handler(error_handler)
 
     logger.info("Bot is running...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
