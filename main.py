@@ -147,20 +147,55 @@ def reset_instagram_password(reset_link: str):
             "waterfall_id": WATERFALL_ID
         }
 
+        logger.info(f"Attempting password reset for uidb36: {uidb36}")
         r = requests.post(url, headers=make_headers(user_agent=USER_AGENT), data=data, timeout=15)
 
-        if r.status_code != 200 or "user_id" not in r.text:
-            return {"success": False, "error": f"Initial reset request failed: {r.status_code} - {r.text[:300]}"}
+        if r.status_code != 200:
+            return {"success": False, "error": f"Initial reset request failed with status {r.status_code}: {r.text[:300]}"}
+
+        # Log the response for debugging
+        logger.info(f"Password reset response: {r.text[:500]}")
+
+        # If the response doesn't contain user_id at all, it's a failure
+        if "user_id" not in r.text:
+            return {"success": False, "error": f"Initial reset request succeeded but no user_id in response: {r.text[:300]}"}
+
+        resp_json = r.json()
+        logger.debug(f"Parsed JSON: {resp_json}")
 
         mid = r.headers.get("Ig-Set-X-Mid") or ""
-        resp_json = r.json()
+
+        # Try to extract user_id (should be present)
         user_id = resp_json.get("user_id")
+        if not user_id:
+            return {"success": False, "error": "user_id missing from reset response."}
+
+        # Try to extract cni and nonce_code (they might be nested or under different names)
         cni = resp_json.get("cni")
         nonce_code = resp_json.get("nonce_code")
         challenge_context = resp_json.get("challenge_context")
 
+        # If not found at top level, look inside a 'challenge' object (common in newer API)
+        if not cni and "challenge" in resp_json and isinstance(resp_json["challenge"], dict):
+            challenge = resp_json["challenge"]
+            cni = challenge.get("cni")
+            nonce_code = challenge.get("nonce_code")
+            challenge_context = challenge.get("challenge_context") or challenge.get("context")
+
+        # If still missing, maybe the response is a Bloks navigation object
+        if not cni and "navigation" in resp_json:
+            nav = resp_json.get("navigation", {})
+            if "data" in nav:
+                nav_data = nav.get("data", {})
+                cni = nav_data.get("cni")
+                nonce_code = nav_data.get("nonce_code")
+                challenge_context = nav_data.get("challenge_context")
+
         if not all([user_id, cni, nonce_code]):
-            return {"success": False, "error": "Missing required fields in reset response."}
+            # Log the exact JSON for debugging
+            logger.error(f"Missing fields in response. user_id={user_id}, cni={cni}, nonce_code={nonce_code}")
+            logger.error(f"Full response: {resp_json}")
+            return {"success": False, "error": "Missing required fields (cni/nonce_code) in reset response."}
 
         # Step 2: Get challenge
         url2 = "https://i.instagram.com/api/v1/bloks/apps/com.instagram.challenge.navigation.take_challenge/"
@@ -227,11 +262,8 @@ def reset_instagram_password(reset_link: str):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Welcome to Instagram Password Reset Bot!\n\n"
-        "Send me a valid Instagram **one-click password reset link** and I'll try to reset it.\n\n"
-        "Example:\n"
-        "`https://www.instagram.com/accounts/password/reset/?uidb36=...&token=...`\n\n"
-        "⚠️ This is for educational/testing purposes. Use at your own risk."
+        "Welcome to STARK Instagram Password Reset Bot!\n\n"
+        "Send here a valid Instagram password reset link and I'll try to reset it ✌🏻.\n\n made by ~@ofstark"
     )
 
 async def handle_reset_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
