@@ -149,54 +149,44 @@ def reset_instagram_password(reset_link: str):
 
         logger.info(f"Password reset response: {r.text[:500]}")
 
-        if "user_id" not in r.text:
-            return {"success": False, "error": f"Initial reset request succeeded but no user_id in response: {r.text[:300]}"}
-
         resp_json = r.json()
         logger.debug(f"Parsed JSON: {resp_json}")
 
-        mid = r.headers.get("Ig-Set-X-Mid") or ""
-        user_id = resp_json.get("user_id")
-        if not user_id:
-            return {"success": False, "error": "user_id missing from reset response."}
-
+        # The response contains 'password_reset_nonce_code', not 'nonce_code'
+        nonce_code = resp_json.get("password_reset_nonce_code")
         cni = resp_json.get("cni")
-        nonce_code = resp_json.get("nonce_code")
-        challenge_context = resp_json.get("challenge_context")
+        # The 'user_id' field is a long string; numeric user_id is in the 'uri'
+        user_id_str = resp_json.get("user_id")
+        uri = resp_json.get("uri", "")
+        # Extract numeric user_id from URI: /challenge/action/1234567890/...
+        import re
+        match = re.search(r'/action/(\d+)/', uri)
+        if match:
+            numeric_user_id = match.group(1)
+        else:
+            numeric_user_id = None
 
-        if not cni and "challenge" in resp_json and isinstance(resp_json["challenge"], dict):
-            challenge = resp_json["challenge"]
-            cni = challenge.get("cni")
-            nonce_code = challenge.get("nonce_code")
-            challenge_context = challenge.get("challenge_context") or challenge.get("context")
-
-        if not cni and "navigation" in resp_json:
-            nav = resp_json.get("navigation", {})
-            if "data" in nav:
-                nav_data = nav.get("data", {})
-                cni = nav_data.get("cni")
-                nonce_code = nav_data.get("nonce_code")
-                challenge_context = nav_data.get("challenge_context")
-
-        if not all([user_id, cni, nonce_code]):
-            logger.error(f"Missing fields in response. user_id={user_id}, cni={cni}, nonce_code={nonce_code}")
+        if not all([numeric_user_id, cni, nonce_code]):
+            logger.error(f"Missing fields. numeric_user_id={numeric_user_id}, cni={cni}, nonce_code={nonce_code}")
             logger.error(f"Full response: {resp_json}")
             return {"success": False, "error": "Missing required fields (cni/nonce_code) in reset response."}
 
+        # Step 2: Get challenge
         url2 = "https://i.instagram.com/api/v1/bloks/apps/com.instagram.challenge.navigation.take_challenge/"
         data2 = {
-            "user_id": str(user_id),
+            "user_id": str(numeric_user_id),
             "cni": str(cni),
             "nonce_code": str(nonce_code),
             "bk_client_context": json.dumps({
                 "bloks_version": "e061cacfa956f06869fc2b678270bef1583d2480bf51f508321e64cfb5cc12bd",
                 "styles_id": "instagram"
             }),
-            "challenge_context": str(challenge_context) if challenge_context else "",
+            "challenge_context": resp_json.get("challenge_context", ""),
             "bloks_versioning_id": "e061cacfa956f06869fc2b678270bef1583d2480bf51f508321e64cfb5cc12bd",
             "get_challenge": "true"
         }
 
+        mid = r.headers.get("Ig-Set-X-Mid") or ""
         r2 = requests.post(url2, headers=make_headers(mid, USER_AGENT), data=data2, timeout=15)
         r2_text = r2.text
 
@@ -204,6 +194,7 @@ def reset_instagram_password(reset_link: str):
         if not challenge_context_final:
             return {"success": False, "error": "Failed to extract final challenge context from Bloks response."}
 
+        # Step 3: Submit new password
         data3 = {
             "is_caa": "False",
             "source": "",
@@ -229,13 +220,14 @@ def reset_instagram_password(reset_link: str):
             logger.warning(f"Password submit returned: {r3.status_code} - {r3.text[:200]}")
 
         new_password = PASSWORD.split(":")[-1]
-        username = get_username(user_id, USER_AGENT) or "Unknown"
+        # Get username using the numeric user ID
+        username = get_username(numeric_user_id, USER_AGENT) or "Unknown"
 
         return {
             "success": True,
             "username": username,
             "password": new_password,
-            "user_id": user_id
+            "user_id": numeric_user_id
         }
 
     except Exception as e:
