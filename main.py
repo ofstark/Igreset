@@ -147,18 +147,15 @@ def reset_instagram_password(reset_link: str):
         if r.status_code != 200:
             return {"success": False, "error": f"Initial reset request failed with status {r.status_code}: {r.text[:300]}"}
 
-        logger.info(f"Password reset response: {r.text[:500]}")
-
         resp_json = r.json()
-        logger.debug(f"Parsed JSON: {resp_json}")
+        logger.debug(f"Password reset response: {resp_json}")
 
-        # The response contains 'password_reset_nonce_code', not 'nonce_code'
+        # Instagram uses 'password_reset_nonce_code' (not 'nonce_code')
         nonce_code = resp_json.get("password_reset_nonce_code")
         cni = resp_json.get("cni")
-        # The 'user_id' field is a long string; numeric user_id is in the 'uri'
-        user_id_str = resp_json.get("user_id")
         uri = resp_json.get("uri", "")
-        # Extract numeric user_id from URI: /challenge/action/1234567890/...
+
+        # Extract numeric user_id from the uri field
         import re
         match = re.search(r'/action/(\d+)/', uri)
         if match:
@@ -220,7 +217,6 @@ def reset_instagram_password(reset_link: str):
             logger.warning(f"Password submit returned: {r3.status_code} - {r3.text[:200]}")
 
         new_password = PASSWORD.split(":")[-1]
-        # Get username using the numeric user ID
         username = get_username(numeric_user_id, USER_AGENT) or "Unknown"
 
         return {
